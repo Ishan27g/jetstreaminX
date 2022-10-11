@@ -1,0 +1,23 @@
+version: "3.7"
+
+services:
+  nats:
+    image: nats:alpine3.15
+    container_name: rfa-natsMapper
+    hostname: rfa-natsMapper
+    ports:
+      - "127.0.0.1:4222:4222"
+      - "127.0.0.1:8222:8222"
+    networks:
+      jet_nw:
+    command: "--js"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.05'
+          memory: 250M
+
+networks:
+  jet_nw:
+    external:
+      true
