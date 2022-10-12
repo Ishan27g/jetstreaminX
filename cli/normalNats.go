@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/Ishan27g/jetstreaminX/pkg/natsMapper"
+	"github.com/Ishan27g/jetstreaminX/internal/natsMapper"
 )
 
 func init() {
