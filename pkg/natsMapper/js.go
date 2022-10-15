@@ -9,6 +9,18 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+func (j *Jetstream) defaultStreamConfig(endpointIdentifier string, subjects []string) *nats.StreamConfig {
+	return &nats.StreamConfig{
+		Name:     endpointIdentifier,
+		Subjects: subjects,
+		//		Retention: nats.WorkQueuePolicy,
+		Retention:   nats.WorkQueuePolicy,
+		MaxAge:      10 * time.Second,
+		Description: "stream for " + endpointIdentifier + " http requests and responses",
+		Duplicates:  0,
+		// MaxConsumers: 1,
+	}
+}
 func (j *Jetstream) checkStream(endpointIdentifier string) bool {
 	stInfo := j.get(&endpointIdentifier, nil)
 	return stInfo != nil
@@ -50,17 +62,17 @@ func (j *Jetstream) get(endpointIdentifier *string, subject *string) *nats.Strea
 	return nil
 }
 
-//func (j *Jetstream) AddSubjects(endpointIdentifier string, subjects ...string) error {
+// func (j *Jetstream) AddSubjects(endpointIdentifier string, subjects ...string) error {
 //
-//	_, err := j.JS.UpdateStream(j.defaultStreamConfig(endpointIdentifier, subjects))
-//	if err != nil {
-//		log.Println("could not update stream " + endpointIdentifier + " : " + err.Error())
-//		if err.Error() == "nats: duplicate subjects detected" {
-//			err = nil
+//		_, err := j.JS.UpdateStream(j.defaultStreamConfig(endpointIdentifier, subjects))
+//		if err != nil {
+//			log.Println("could not update stream " + endpointIdentifier + " : " + err.Error())
+//			if err.Error() == "nats: duplicate subjects detected" {
+//				err = nil
+//			}
 //		}
+//		return err
 //	}
-//	return err
-//}
 func (j *Jetstream) addStream(endpointIdentifier string, subjects ...string) error {
 	var err error
 	_, err = j.JS.AddStream(j.defaultStreamConfig(endpointIdentifier, subjects))
@@ -77,62 +89,68 @@ func (j *Jetstream) deleteStream(endpointIdentifier string) error {
 	}
 	return err
 }
-func (j *Jetstream) defaultStreamConfig(endpointIdentifier string, subjects []string) *nats.StreamConfig {
-	return &nats.StreamConfig{
-		Name:     endpointIdentifier,
-		Subjects: subjects,
-		//		Retention: nats.WorkQueuePolicy,
-		Retention:    nats.LimitsPolicy,
-		MaxAge:       250 * time.Millisecond,
-		Description:  "stream for " + endpointIdentifier + " http requests and responses",
-		Duplicates:   0,
-		MaxConsumers: 1,
-	}
-}
 
-func (j *Jetstream) publish(subject string, msg message) {
+func (j *Jetstream) publish(subject string, msg message, timeout time.Duration) bool {
 	b, _ := json.Marshal(msg)
 
 	_, err := j.JS.PublishAsync(subject, b)
 	if err != nil {
 		log.Println("error in publishing " + err.Error())
-		return
+		return false
 	}
 	select {
 	case <-j.JS.PublishAsyncComplete():
-	case <-time.After(500 * time.Millisecond):
+		log.Println("good publish to " + subject)
+		return true
+	case <-time.After(timeout):
 		log.Println("publish did not resolve in time")
-		return
+		return false
 	}
-	if err != nil {
-		log.Println("error publishing to jetstream " + err.Error())
-		return
-	}
-
-	log.Println("good publish to " + subject)
-	return
 
 }
 
 func (j *Jetstream) subscribe(subject string, cb func(msg *message)) bool {
 	var err error
 	log.Println("subbed to " + subject)
-
-	if _, err = j.JS.Subscribe(subject, func(natsMsg *nats.Msg) {
-		err = natsMsg.Ack()
-		if err != nil {
-			log.Println("unable to ack natsMsg " + err.Error())
-			return
-		}
-		var msg = &message{}
-		err := json.Unmarshal(natsMsg.Data, msg)
-		if err != nil {
-			log.Println("unable to unmarshal natsMsg " + err.Error())
-			return
-		}
-		cb(msg)
-	}, nats.AckExplicit(), nats.DeliverNew()); err != nil {
-		log.Println("unable to subscribe " + err.Error())
+	consumerName := subject + "-consumer"
+	j.JS.AddConsumer(subject, &nats.ConsumerConfig{
+		Durable:   consumerName,
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	sub1, err := j.JS.PullSubscribe(subject, consumerName, nats.DeliverAll())
+	if err != nil {
+		log.Println("unable to pull-sub " + err.Error())
+		return false
 	}
+	natsMsg, err := sub1.Fetch(1, nats.MaxWait(time.Hour))
+	if err != nil {
+		log.Println("unable to fetch natsMsg " + err.Error())
+		return false
+	}
+	go natsMsg[0].Ack()
+	var msg = &message{}
+	err = json.Unmarshal(natsMsg[0].Data, msg)
+	if err != nil {
+		log.Println("unable to unmarshal natsMsg " + err.Error())
+		return false
+	}
+	cb(msg)
+	//
+	//if _, err = j.JS.Subscribe(subject, func(natsMsg *nats.Msg) {
+	//	err = natsMsg.Ack()
+	//	if err != nil {
+	//		log.Println("unable to ack natsMsg " + err.Error())
+	//		return
+	//	}
+	//	var msg = &message{}
+	//	err := json.Unmarshal(natsMsg.Data, msg)
+	//	if err != nil {
+	//		log.Println("unable to unmarshal natsMsg " + err.Error())
+	//		return
+	//	}
+	//	cb(msg)
+	//}, nats.AckExplicit(), nats.DeliverNew()); err != nil {
+	//	log.Println("unable to subscribe " + err.Error())
+	//}
 	return true
 }

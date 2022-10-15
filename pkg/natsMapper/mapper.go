@@ -40,28 +40,34 @@ func (n *natsJsHandler) Start(handlerFunc func(req *http.Request, rsp *http.Resp
 	n.getOrCreate(x.EndpointIdentifier)
 
 	log.Println("listener: subbed to " + x.EndpointIdentifier)
-	n.subscribe(x.EndpointIdentifier, func(msg *message) {
+	if !n.subscribe(x.EndpointIdentifier, func(msg *message) {
+		go func() {
 
-		var rsp = http.Response{}
-		req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(msg.Data)))
-		if err != nil {
-			log.Println("listener :" + err.Error())
-			return
-		}
+			go n.Start(handlerFunc)
 
-		handlerFunc(req, &rsp)
+			var rsp = http.Response{}
+			req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(msg.Data)))
+			if err != nil {
+				log.Println("listener :" + err.Error())
+				return
+			}
 
-		msg.Data, _ = json.Marshal(&Response{Response: &rsp})
-		if err != nil {
-			log.Println("listener:" + err.Error())
-			return
-		}
-		// n.AddSubjects(m.EndpointIdentifier, m.Hash)
-		s := msg.Hash
-		log.Println("listener: pub to " + s)
-		n.publish(s, *msg)
-		n.deleteStream(s)
-	})
+			handlerFunc(req, &rsp)
+
+			msg.Data, _ = json.Marshal(&Response{Response: &rsp})
+			if err != nil {
+				log.Println("listener:" + err.Error())
+				return
+			}
+			// n.AddSubjects(m.EndpointIdentifier, m.Hash)
+			s := msg.Hash
+			log.Println("listener: pub to " + s)
+			n.publish(s, *msg, n.httpTimeout)
+			n.deleteStream(s)
+		}()
+	}) {
+		go n.Start(handlerFunc)
+	}
 }
 
 func (n *natsJsHandler) PublishHTTPRequest(req *http.Request, retry int) http.Response {
@@ -75,18 +81,19 @@ func (n *natsJsHandler) PublishHTTPRequest(req *http.Request, retry int) http.Re
 
 	x := newMessage(n.endpointIdentifier, b.Bytes())
 
-	if !n.checkStream(x.EndpointIdentifier) {
-		log.Println("no subscribers")
-		if retry >= 2 {
-			return http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("No handlers subscribed for - " + n.endpointIdentifier))}
-		}
-		<-time.After(100 * time.Millisecond)
-		n.PublishHTTPRequest(req, retry+1)
-	}
+	//if !n.checkStream(x.EndpointIdentifier) {
+	//	log.Println("no subscribers")
+	//	if retry >= 4 {
+	//		return http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("No handlers subscribed for - " + n.endpointIdentifier))}
+	//	}
+	//	<-time.After(n.httpTimeout / 4)
+	//	return n.PublishHTTPRequest(req, retry+1)
+	//}
 
 	n.getOrCreate(x.Hash)
 
 	log.Println("sender: subbing to : ", x.Hash)
+
 	go n.subscribe(x.Hash, func(natsMsg *message) {
 
 		var rsp = Response{}
@@ -100,8 +107,12 @@ func (n *natsJsHandler) PublishHTTPRequest(req *http.Request, retry int) http.Re
 	})
 	s := x.EndpointIdentifier //+ ".*" //+ x.Hash
 	log.Println("sender: publishing to " + s)
-	<-time.After(300 * time.Millisecond)
-	n.publish(s, *x)
+
+	<-time.After(250 * time.Millisecond)
+
+	if !n.publish(s, *x, n.httpTimeout) {
+		return http.Response{StatusCode: http.StatusRequestTimeout, Body: io.NopCloser(strings.NewReader("timed out"))}
+	}
 
 	select {
 	case <-time.After(n.httpTimeout):
