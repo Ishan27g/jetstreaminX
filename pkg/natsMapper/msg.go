@@ -8,37 +8,13 @@ import (
 	"time"
 )
 
-type Msg interface {
-	RequestSubject() string
-	ResponseSubject() string
-
-	Get() Message
-}
-type Message struct {
+type message struct {
 	Hash               string `json:"hash"`
 	Data               []byte `json:"data"`
 	EndpointIdentifier string `json:"endpointIdentifier"`
 }
 
-func (m *Message) Get() Message {
-	return *m
-}
-
-func (m *Message) RequestSubject() string {
-	s := asSubject("request", m.EndpointIdentifier, "*")
-	return s
-}
-
-func (m *Message) ResponseSubject() string {
-	s := asSubject("response", m.EndpointIdentifier, m.Hash)
-	return s
-}
-
-func asSubject(pre, str, hash string) string {
-	return "endpoint." + pre + "." + str + "." + hash
-}
-
-func NewMsg(endpointIdentifier string, data []byte) Msg {
+func newMessage(endpointIdentifier string, data []byte) *message {
 	var hashIt = func(endpointIdentifier string) (sha string) {
 		var randomBytes = func(size int) []byte {
 			var b []byte
@@ -52,7 +28,7 @@ func NewMsg(endpointIdentifier string, data []byte) Msg {
 		hr.Write(append([]byte(endpointIdentifier), randomBytes(len(endpointIdentifier))...))
 		return base64.URLEncoding.EncodeToString(hr.Sum(nil))
 	}
-	return &Message{
+	return &message{
 		EndpointIdentifier: endpointIdentifier,
 		Data:               data,
 		Hash:               hashIt(endpointIdentifier),

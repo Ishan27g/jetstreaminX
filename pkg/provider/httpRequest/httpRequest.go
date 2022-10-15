@@ -3,16 +3,18 @@ package httpRequest
 import (
 	"net/http"
 
-	"github.com/Ishan27g/jetstreaminX/internal/natsMapper"
+	"github.com/Ishan27g/jetstreaminX/pkg/natsMapper"
 	"github.com/Ishan27g/jetstreaminX/pkg/provider"
 )
 
-type request struct{}
-
-func (r *request) Publish(rr natsMapper.JsSender, req *http.Request) http.Response {
-	return rr.PublishHTTPRequest(req)
+type request struct {
+	JS natsMapper.JsSender
 }
 
-func New() provider.Sender[natsMapper.JsSender] {
-	return &request{}
+func (r *request) Publish(req *http.Request) http.Response {
+	return r.JS.PublishHTTPRequest(req, 0)
+}
+
+func New(js natsMapper.JsSender) provider.Sender[natsMapper.JsSender] {
+	return &request{js}
 }
