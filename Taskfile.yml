@@ -1,0 +1,24 @@
+version: '3'
+
+env:
+  NATS: nats://localhost:4222
+
+
+tasks:
+
+  # run in docker
+  nats:
+    cmds:
+      - docker-compose down
+      - docker compose run --service-ports --rm nats
+  # run local
+  pub:
+    cmds:
+      - go run main.go pub
+  sub:
+    cmds:
+      - go run main.go sub
+
+#      - open -a terminal .dockerfiles/nats.sh
+#      - open -a terminal .dockerfiles/jaeger.sh
+#      - open -a terminal .dockerfiles/proxy.sh

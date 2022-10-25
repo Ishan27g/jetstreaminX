@@ -11,11 +11,14 @@ import (
 	"time"
 )
 
+type Response struct {
+	*http.Response `json:"http_response"`
+}
 type JsListener interface {
 	Start(handlerFunc func(req *http.Request, rsp *http.Response))
 }
 type JsSender interface {
-	PublishHTTPRequest(req *http.Request) http.Response
+	PublishHTTPRequest(req *http.Request, retry int) http.Response
 }
 
 func RegisterJSSender(js *Jetstream, endpointIdentifier string, timeout time.Duration) JsSender {
@@ -32,38 +35,42 @@ type natsJsHandler struct {
 }
 
 func (n *natsJsHandler) Start(handlerFunc func(req *http.Request, rsp *http.Response)) {
-	x := NewMsg(n.endpointIdentifier, nil)
+	x := newMessage(n.endpointIdentifier, nil)
 
-	n.GetOrCreate(x.Get().EndpointIdentifier)
-	// n.AddSubjects(x.Get().EndpointIdentifier, x.Get().EndpointIdentifier)
+	n.getOrCreate(x.EndpointIdentifier)
 
-	log.Println("listener: subbed to " + x.Get().EndpointIdentifier)
-	n.Subscribe(x.Get().EndpointIdentifier, func(msg *Message) {
+	log.Println("listener: subbed to " + x.EndpointIdentifier)
+	if !n.subscribe(x.EndpointIdentifier, func(msg *message) {
+		go func() {
 
+			go n.Start(handlerFunc)
+
+			var rsp = http.Response{}
+			req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(msg.Data)))
+			if err != nil {
+				log.Println("listener :" + err.Error())
+				return
+			}
+
+			handlerFunc(req, &rsp)
+
+			msg.Data, _ = json.Marshal(&Response{Response: &rsp})
+			if err != nil {
+				log.Println("listener:" + err.Error())
+				return
+			}
+			// n.AddSubjects(m.EndpointIdentifier, m.Hash)
+			s := msg.Hash
+			log.Println("listener: pub to " + s)
+			n.publish(s, *msg, n.httpTimeout)
+			n.deleteStream(s)
+		}()
+	}) {
 		go n.Start(handlerFunc)
-
-		var rsp = http.Response{}
-		req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(msg.Data)))
-		if err != nil {
-			log.Println("listener :" + err.Error())
-			return
-		}
-
-		handlerFunc(req, &rsp)
-
-		msg.Data, _ = json.Marshal(&HttpResponse{Response: &rsp})
-		if err != nil {
-			log.Println("listener:" + err.Error())
-			return
-		}
-		// n.AddSubjects(m.EndpointIdentifier, m.Hash)
-		s := msg.Hash
-		log.Println("listener: pub to " + s)
-		n.Publish(s, *msg)
-	})
+	}
 }
 
-func (n *natsJsHandler) PublishHTTPRequest(req *http.Request) http.Response {
+func (n *natsJsHandler) PublishHTTPRequest(req *http.Request, retry int) http.Response {
 	var b = &bytes.Buffer{}
 	var rspChan = make(chan http.Response, 1)
 	err := req.Write(b)
@@ -72,18 +79,24 @@ func (n *natsJsHandler) PublishHTTPRequest(req *http.Request) http.Response {
 		return http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(strings.NewReader("sorry"))}
 	}
 
-	x := NewMsg(n.endpointIdentifier, b.Bytes())
+	x := newMessage(n.endpointIdentifier, b.Bytes())
 
-	if !n.CheckStream(x.Get().EndpointIdentifier) {
-		log.Println("no subscribers")
-	}
+	//if !n.checkStream(x.EndpointIdentifier) {
+	//	log.Println("no subscribers")
+	//	if retry >= 4 {
+	//		return http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("No handlers subscribed for - " + n.endpointIdentifier))}
+	//	}
+	//	<-time.After(n.httpTimeout / 4)
+	//	return n.PublishHTTPRequest(req, retry+1)
+	//}
 
-	n.GetOrCreate(x.Get().Hash)
-	//n.AddSubjects(x.Get().EndpointIdentifier, x.Get().EndpointIdentifier+"."+x.Get().Hash)
+	n.getOrCreate(x.Hash)
 
-	log.Println("sender: subbed to : ", x.Get().Hash)
-	go n.Subscribe(x.Get().Hash, func(natsMsg *Message) {
-		var rsp = HttpResponse{}
+	log.Println("sender: subbing to : ", x.Hash)
+
+	go n.subscribe(x.Hash, func(natsMsg *message) {
+
+		var rsp = Response{}
 		err = json.Unmarshal(natsMsg.Data, &rsp)
 		if err != nil {
 			log.Println("sender:" + err.Error())
@@ -92,9 +105,14 @@ func (n *natsJsHandler) PublishHTTPRequest(req *http.Request) http.Response {
 		r := *rsp.Response
 		rspChan <- r
 	})
-	s := x.Get().EndpointIdentifier //+ ".*" //+ x.Get().Hash
-	log.Println("sender: publish to " + s)
-	n.Publish(s, x.Get())
+	s := x.EndpointIdentifier //+ ".*" //+ x.Hash
+	log.Println("sender: publishing to " + s)
+
+	<-time.After(250 * time.Millisecond)
+
+	if !n.publish(s, *x, n.httpTimeout) {
+		return http.Response{StatusCode: http.StatusRequestTimeout, Body: io.NopCloser(strings.NewReader("timed out"))}
+	}
 
 	select {
 	case <-time.After(n.httpTimeout):
